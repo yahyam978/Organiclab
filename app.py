@@ -10,58 +10,67 @@ plt.style.use('seaborn-v0_8-darkgrid')
 
 def calculate_kinetics(df):
     """
-    Performs kinetic calculations to generate the second table and determine parameters.
+    Performs kinetic calculations using the differential method to generate 
+    the second table and determine parameters.
     """
     # Ensure columns are numeric
     df['Time, Sec'] = pd.to_numeric(df['Time, Sec'], errors='coerce')
     df['W remaining (gm)'] = pd.to_numeric(df['W remaining (gm)'], errors='coerce')
 
     # Drop rows with NaN in critical columns
-    df_cleaned = df.dropna(subset=['Time, Sec', 'W remaining (gm)']).copy()
+    df_cleaned = df.dropna(subset=['Time, Sec', 'W remaining (gm)']).copy().reset_index(drop=True)
 
     if len(df_cleaned) < 2:
         st.warning("Insufficient data (less than 2 valid rows) for rate calculation.")
-        return None, (np.nan, np.nan, np.nan)
+        return None, None, (np.nan, np.nan, np.nan)
 
-    # --- Table 2 Calculations ---
-    df_table2 = pd.DataFrame()
-    df_table2['Time'] = df_cleaned['Time, Sec']
-    df_table2['W remaining (gm)'] = df_cleaned['W remaining (gm)']
-    df_table2['Ln (Wremaining)'] = np.log(df_table2['W remaining (gm)'])
-
-    # 1. Rate Calculation (Approximation using finite difference)
-    # Rate = -dW / dt
+    # --- Differential Method Calculations ---
+    
+    # Differences
     time_diff = np.diff(df_cleaned['Time, Sec'])
     w_diff = np.diff(df_cleaned['W remaining (gm)'])
 
-    # Rates: -ΔW / Δt (Disappearance rate is positive)
+    # 1. Rate: -ΔW / Δt (Disappearance rate is positive)
     rates_actual = -w_diff / time_diff
 
-    # Associate rate with the average concentration and time of the interval
-    w_remaining_for_rate_plot = (df_cleaned['W remaining (gm)'].iloc[:-1].values + df_cleaned['W remaining (gm)'].iloc[1:].values) / 2
-    time_for_rate_plot = (df_cleaned['Time, Sec'].iloc[:-1].values + df_cleaned['Time, Sec'].iloc[1:].values) / 2
-
-    # Prepare columns for Table 2 display (add NaNs for alignment)
-    rate_col = [np.nan] + list(rates_actual)
-    df_table2['Rate'] = rate_col
-
-    # 2. Ln(rate) Calculation
-    # Note: We take log only for positive rates.
-    df_table2['Ln (rate)'] = np.log(df_table2['Rate'].mask(df_table2['Rate'] <= 0, np.nan))
+    # 2. Average W_remaining (Concentration) for the interval
+    w_remaining_avg = (df_cleaned['W remaining (gm)'].iloc[:-1].values + df_cleaned['W remaining (gm)'].iloc[1:].values) / 2
     
-    # 3. Filter for Ln(Rate) vs Ln(Wremaining) Plot
-    valid_indices = (rates_actual > 0) & (w_remaining_for_rate_plot > 0)
-    rates_for_log = rates_actual[valid_indices]
-    w_remaining_for_log = w_remaining_for_rate_plot[valid_indices]
+    # 3. Time (midpoint of the interval, for potential plotting)
+    time_avg = (df_cleaned['Time, Sec'].iloc[:-1].values + df_cleaned['Time, Sec'].iloc[1:].values) / 2
+
+    # Create the Kinetics DataFrame (Table 2's core data)
+    df_kinetics = pd.DataFrame({
+        'Time (sec)': time_avg,
+        'W remaining (gm) (Avg)': w_remaining_avg,
+        'Rate': rates_actual,
+    })
+    
+    # Filter for valid log entries (Rate > 0 and W_remaining > 0)
+    df_kinetics_valid = df_kinetics[(df_kinetics['Rate'] > 0) & (df_kinetics['W remaining (gm) (Avg)'] > 0)].copy()
+
+    # 4. Ln calculations
+    df_kinetics_valid['Ln (Wremaining)'] = np.log(df_kinetics_valid['W remaining (gm) (Avg)'])
+    df_kinetics_valid['Ln (rate)'] = np.log(df_kinetics_valid['Rate'])
+
+    # --- Final Table 2 Display ---
+    # Prepare data for display in the format of the provided image (Time, W remaining, Ln(Wremaining) from input)
+    df_table2_display = df_cleaned[['W remaining (gm)', 'Time, Sec']].copy()
+    df_table2_display['Ln (Wremaining)'] = np.log(df_table2_display['W remaining (gm)'])
+    
+    # Add Rate and Ln(rate) columns with appropriate NaN padding to visualize the interval nature
+    nan_row = {'Rate': np.nan, 'Ln (rate)': np.nan}
+    df_rate_cols = pd.DataFrame([nan_row] + df_kinetics[['Rate', 'Ln (rate)']].to_dict('records'))
+    df_table2_display['Rate'] = df_rate_cols['Rate'].values
+    df_table2_display['Ln (rate)'] = df_rate_cols['Ln (rate)'].values
     
     # --- Requirements (Kinetics Parameters) Calculation ---
     slope_n, intercept_ln_k, k_value = np.nan, np.nan, np.nan
     
-    if len(rates_for_log) >= 2:
+    if len(df_kinetics_valid) >= 2:
         try:
-            # Perform linear regression for Ln(Rate) vs Ln(Wremaining)
-            ln_w = np.log(w_remaining_for_log)
-            ln_rate = np.log(rates_for_log)
+            ln_w = df_kinetics_valid['Ln (Wremaining)']
+            ln_rate = df_kinetics_valid['Ln (rate)']
             
             # Linear Regression: Ln(Rate) = n * Ln(Wremaining) + Ln(K)
             slope_n, intercept_ln_k, _, _, _ = linregress(ln_w, ln_rate)
@@ -70,12 +79,12 @@ def calculate_kinetics(df):
         except Exception as e:
             st.error(f"Error during linear regression: {e}")
             
-    # Reorder columns for display
-    df_table2 = df_table2[['Time', 'W remaining (gm)', 'Ln (Wremaining)', 'Rate', 'Ln (rate)']]
-    
-    return df_table2, (slope_n, intercept_ln_k, k_value)
+    # Reorder and rename columns for display
+    df_table2_display.rename(columns={'Time, Sec': 'Time'}, inplace=True)
 
-def plot_graphs(df1, df2, slope_n, intercept_ln_k):
+    return df_table2_display, df_kinetics_valid, (slope_n, intercept_ln_k, k_value)
+
+def plot_graphs(df1, df_kinetics, slope_n, intercept_ln_k):
     """
     Generates the three required kinetic graphs.
     """
@@ -88,40 +97,34 @@ def plot_graphs(df1, df2, slope_n, intercept_ln_k):
     axes[0].set_xlabel('Time (sec)')
     axes[0].set_ylabel('W remaining (gm)')
 
-    # --- Graph 2: Ln(Wremaining) Versus Time ---
-    axes[1].plot(df2['Time'], df2['Ln (Wremaining)'], marker='o', color='green')
-    axes[1].set_title('Graph 2: Ln(Wremaining) Versus Time')
+    # --- Graph 2: Ln(Wremaining) Versus Time (First-order check) ---
+    axes[1].plot(df1['Time, Sec'], np.log(df1['W remaining (gm)']), marker='o', color='green')
+    axes[1].set_title('Graph 2: Ln(Wremaining) Versus Time (First-order Check)')
     axes[1].set_xlabel('Time (sec)')
     axes[1].set_ylabel('Ln(Wremaining)')
 
-    # --- Graph 3: Ln(Rate) Versus Ln(Wremaining) ---
+    # --- Graph 3: Ln(Rate) Versus Ln(Wremaining) (Order & K Determination) ---
     axes[2].set_title('Graph 3: Ln(Rate) Versus Ln(Wremaining)')
-    axes[2].set_xlabel('Ln(Wremaining)')
+    axes[2].set_xlabel('Ln(Wremaining) (from Avg Conc)')
     axes[2].set_ylabel('Ln(Rate)')
     
     # Data preparation for Ln(Rate) vs Ln(Wremaining) plot
-    # Use the cleaned data points from the calculation function
-    df_rate_kinetics = df2.dropna(subset=['Ln (rate)', 'Ln (Wremaining)']).copy()
+    df_plot_data = df_kinetics.dropna(subset=['Ln (rate)', 'Ln (Wremaining)']).copy()
     
-    if len(df_rate_kinetics) >= 2 and not np.isnan(slope_n):
-        ln_w_points = np.log(df2['W remaining (gm)'].iloc[:-1].values + df2['W remaining (gm)'].iloc[1:].values) / 2
-        ln_rate_points = df2['Ln (rate)'].iloc[1:].values
+    if len(df_plot_data) >= 2 and not np.isnan(slope_n):
+        ln_w = df_plot_data['Ln (Wremaining)']
+        ln_rate = df_plot_data['Ln (rate)']
         
-        # Filter for valid log values
-        valid_indices = (~np.isnan(ln_w_points)) & (~np.isnan(ln_rate_points))
-        ln_w_points = ln_w_points[valid_indices]
-        ln_rate_points = ln_rate_points[valid_indices]
-        
-        axes[2].scatter(ln_w_points, ln_rate_points, color='red')
+        axes[2].scatter(ln_w, ln_rate, color='red')
         
         # Plot linear regression line
-        x_lin_reg = np.array([ln_w_points.min() - 0.1, ln_w_points.max() + 0.1])
+        x_lin_reg = np.array([ln_w.min() - 0.1, ln_w.max() + 0.1])
         y_lin_reg = slope_n * x_lin_reg + intercept_ln_k
         axes[2].plot(x_lin_reg, y_lin_reg, color='blue', linestyle='--', 
-                     label=f'Linear Fit: y = {slope_n:.2f}x + {intercept_ln_k:.2f}')
+                     label=f'Linear Fit: $\\ln(r) = {slope_n:.2f}\\ln(W) + {intercept_ln_k:.2f}$')
         axes[2].legend()
     else:
-        axes[2].text(0.5, 0.5, 'Insufficient valid data for Ln(Rate) vs Ln(Wremaining)', 
+        axes[2].text(0.5, 0.5, 'Insufficient valid data for Ln(Rate) vs Ln(Wremaining) plot and regression.', 
                      horizontalalignment='center', verticalalignment='center', 
                      transform=axes[2].transAxes)
 
@@ -131,8 +134,12 @@ def plot_graphs(df1, df2, slope_n, intercept_ln_k):
 # --- Streamlit UI ---
 st.set_page_config(layout="wide", page_title="Reaction Kinetics Analyzer")
 
-st.title("🔬 Reaction Kinetics Analysis App")
-st.markdown("Upload your experimental data to calculate kinetic parameters and visualize results.")
+st.title("🔬 Organic Technology Lab: Reaction Kinetics Analysis")
+st.markdown("---")
+st.markdown("""
+This app analyzes the pyrolysis of rice straw using the differential method: $\\ln(r) = \\ln(K) + n \\ln(W_{\\text{remaining}})$.
+The rate is approximated by the slope over time intervals: $r \\approx -\\frac{\\Delta W}{\\Delta t}$.
+""")
 
 # Example Data from the user's image (for easy start)
 example_data = {
@@ -142,14 +149,14 @@ example_data = {
 }
 example_df = pd.DataFrame(example_data)
 
-st.header("1. Input Data (Table 1)")
+st.header("1. Input Data (Table 1: With Catalyst Data)")
 
 # Data input method selection
 data_method = st.radio("Choose Input Method:", ('Paste/Manual Entry', 'Upload CSV/Excel'), index=0)
 
 df_input = pd.DataFrame()
 if data_method == 'Paste/Manual Entry':
-    st.info("Edit the table below or use the 'Upload CSV/Excel' option.")
+    st.info("Edit the data in the table below. Ensure columns are named exactly 'Time, Sec', 'Volume of Bio-Oil (ml)', and 'W remaining (gm)'.")
     df_input = st.data_editor(
         example_df, 
         num_rows="dynamic",
@@ -157,7 +164,7 @@ if data_method == 'Paste/Manual Entry':
     )
     
 elif data_method == 'Upload CSV/Excel':
-    uploaded_file = st.file_uploader("Upload your CSV or Excel file (must contain 'Time, Sec', 'Volume of Bio-Oil (ml)', and 'W remaining (gm)')", type=['csv', 'xlsx'])
+    uploaded_file = st.file_uploader("Upload your CSV or Excel file", type=['csv', 'xlsx'])
     if uploaded_file is not None:
         try:
             if uploaded_file.name.endswith('.csv'):
@@ -165,16 +172,13 @@ elif data_method == 'Upload CSV/Excel':
             else:
                 df_input = pd.read_excel(uploaded_file)
             
-            # Ensure required columns exist and are displayed
+            # Basic validation check
             required_cols = ['Time, Sec', 'Volume of Bio-Oil (ml)', 'W remaining (gm)']
-            for col in required_cols:
-                if col not in df_input.columns:
-                    st.error(f"Required column '{col}' is missing in the uploaded file.")
-                    df_input = pd.DataFrame() # Clear df_input if validation fails
-                    break
-            
-            if not df_input.empty:
-                st.write("Uploaded Data Preview:")
+            if not all(col in df_input.columns for col in required_cols):
+                 st.error(f"Uploaded file must contain all required columns: {required_cols}")
+                 df_input = pd.DataFrame() 
+            elif not df_input.empty:
+                st.write("Uploaded Data Preview (editable):")
                 df_input = st.data_editor(df_input, num_rows="dynamic", use_container_width=True)
                 
         except Exception as e:
@@ -184,17 +188,12 @@ elif data_method == 'Upload CSV/Excel':
 if not df_input.empty and len(df_input) > 1 and st.button("Calculate Kinetics and Generate Results"):
     
     with st.spinner('Calculating...'):
-        # Rename the resulting data to match the original structure (Table 1)
-        df_table1 = df_input.rename(columns={
-            'Time, Sec': 'Time, Sec', 
-            'Volume of Bio-Oil (ml)': 'Volume of Bio-Oil (ml)', 
-            'W remaining (gm)': 'W remaining (gm)'
-        })
+        df_table1 = df_input.copy()
         
         # Run calculations
-        df_table2, (slope_n, intercept_ln_k, rate_constant_k) = calculate_kinetics(df_table1)
+        df_table2_display, df_kinetics_valid, (slope_n, intercept_ln_k, rate_constant_k) = calculate_kinetics(df_table1)
 
-        if df_table2 is not None:
+        if df_table2_display is not None:
             
             # --- Results Display ---
             st.header("2. Analysis Results")
@@ -203,11 +202,12 @@ if not df_input.empty and len(df_input) > 1 and st.button("Calculate Kinetics an
             
             with col1:
                 st.subheader("Table 1: Input Data (With Catalyst Data)")
-                st.dataframe(df_table1.iloc[:, :3], use_container_width=True) # Show only the first 3 input columns
+                st.dataframe(df_table1.iloc[:, :3], use_container_width=True)
 
             with col2:
                 st.subheader("Table 2: Concentration, Rate, Ln values")
-                st.dataframe(df_table2.round(4), use_container_width=True)
+                st.markdown("*(Note: Rate and Ln(rate) are calculated for the interval between rows. $\\text{Ln}(W_{\\text{remaining}})$ is from the input concentration.)*")
+                st.dataframe(df_table2_display[['W remaining (gm)', 'Time', 'Rate', 'Ln (Wremaining)', 'Ln (rate)']].round(4), use_container_width=True)
                 
             st.markdown("---")
             
@@ -223,7 +223,7 @@ if not df_input.empty and len(df_input) > 1 and st.button("Calculate Kinetics an
 
             # --- Graphs Display ---
             st.header("4. Kinetic Graphs")
-            fig = plot_graphs(df_table1, df_table2, slope_n, intercept_ln_k)
+            fig = plot_graphs(df_table1, df_kinetics_valid, slope_n, intercept_ln_k)
             st.pyplot(fig)
             
         else:
