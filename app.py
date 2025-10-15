@@ -30,16 +30,16 @@ def calculate_kinetics(df):
     time_diff = np.diff(df_cleaned['Time, Sec'])
     w_diff = np.diff(df_cleaned['W remaining (gm)'])
 
-    # 1. Rate: -ΔW / Δt (Disappearance rate is positive)
+    # 1. Rate: -ΔW / Δt (Disappearance rate is positive) - (N-1) elements
     rates_actual = -w_diff / time_diff
 
-    # 2. Average W_remaining (Concentration) for the interval
+    # 2. Average W_remaining (Concentration) for the interval - (N-1) elements
     w_remaining_avg = (df_cleaned['W remaining (gm)'].iloc[:-1].values + df_cleaned['W remaining (gm)'].iloc[1:].values) / 2
     
-    # 3. Time (midpoint of the interval, for potential plotting)
+    # 3. Time (midpoint of the interval, for potential plotting) - (N-1) elements
     time_avg = (df_cleaned['Time, Sec'].iloc[:-1].values + df_cleaned['Time, Sec'].iloc[1:].values) / 2
 
-    # Create the Kinetics DataFrame (Table 2's core data)
+    # Create the Kinetics DataFrame (used ONLY for regression and plotting)
     df_kinetics = pd.DataFrame({
         'Time (sec)': time_avg,
         'W remaining (gm) (Avg)': w_remaining_avg,
@@ -47,23 +47,30 @@ def calculate_kinetics(df):
     })
     
     # Filter for valid log entries (Rate > 0 and W_remaining > 0)
+    # This DataFrame is guaranteed to have the log columns and is used for regression
     df_kinetics_valid = df_kinetics[(df_kinetics['Rate'] > 0) & (df_kinetics['W remaining (gm) (Avg)'] > 0)].copy()
 
-    # 4. Ln calculations
+    # 4. Ln calculations for the valid regression data
     df_kinetics_valid['Ln (Wremaining)'] = np.log(df_kinetics_valid['W remaining (gm) (Avg)'])
     df_kinetics_valid['Ln (rate)'] = np.log(df_kinetics_valid['Rate'])
 
-    # --- Final Table 2 Display ---
-    # Prepare data for display in the format of the provided image (Time, W remaining, Ln(Wremaining) from input)
+
+    # --- Final Table 2 Display (N elements) ---
+    # Prepare data for display using the N input points
     df_table2_display = df_cleaned[['W remaining (gm)', 'Time, Sec']].copy()
+    
+    # Calculate Ln(Wremaining) for all N points
     df_table2_display['Ln (Wremaining)'] = np.log(df_table2_display['W remaining (gm)'])
     
-    # Add Rate and Ln(rate) columns with appropriate NaN padding to visualize the interval nature
-    nan_row = {'Rate': np.nan, 'Ln (rate)': np.nan}
-    df_rate_cols = pd.DataFrame([nan_row] + df_kinetics[['Rate', 'Ln (rate)']].to_dict('records'))
-    df_table2_display['Rate'] = df_rate_cols['Rate'].values
-    df_table2_display['Ln (rate)'] = df_rate_cols['Ln (rate)'].values
+    # Pad the (N-1) rates with NaN at the beginning (index 0) to align with N rows
+    # This is the fix for the KeyError
+    rate_col_padded = np.insert(rates_actual, 0, np.nan)
+    df_table2_display['Rate'] = rate_col_padded
     
+    # Calculate Ln(rate) directly on the padded Rate column. Handle non-positive rates.
+    df_table2_display['Ln (rate)'] = np.log(df_table2_display['Rate'].mask(df_table2_display['Rate'] <= 0, np.nan))
+    
+
     # --- Requirements (Kinetics Parameters) Calculation ---
     slope_n, intercept_ln_k, k_value = np.nan, np.nan, np.nan
     
@@ -82,6 +89,7 @@ def calculate_kinetics(df):
     # Reorder and rename columns for display
     df_table2_display.rename(columns={'Time, Sec': 'Time'}, inplace=True)
 
+    # df_kinetics_valid is passed for plotting Graph 3
     return df_table2_display, df_kinetics_valid, (slope_n, intercept_ln_k, k_value)
 
 def plot_graphs(df1, df_kinetics, slope_n, intercept_ln_k):
